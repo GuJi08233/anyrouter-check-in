@@ -36,7 +36,7 @@ def load_balance_hash():
 		if os.path.exists(BALANCE_HASH_FILE):
 			with open(BALANCE_HASH_FILE, 'r', encoding='utf-8') as f:
 				return f.read().strip()
-	except Exception:
+	except Exception:  # nosec B110
 		pass
 	return None
 
@@ -412,9 +412,9 @@ async def main():
 						'after_quota': after_quota,
 						'after_used': after_used,
 						'check_in_reward': check_in_reward,  # 签到获得
-						'usage_increase': usage_increase,    # 本次消耗
-						'balance_change': balance_change,    # 余额变化
-						'success': success
+						'usage_increase': usage_increase,  # 本次消耗
+						'balance_change': balance_change,  # 余额变化
+						'success': success,
 					}
 
 			if should_notify_this_account:
