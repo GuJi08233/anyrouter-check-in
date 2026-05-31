@@ -1,0 +1,4 @@
+PANEL_PASSWORD=replace-with-a-long-random-password
+
+# 账号、provider、通知等配置不再写环境变量。
+# 请在 Worker 管理面板中维护，它们会保存到 Cloudflare KV。

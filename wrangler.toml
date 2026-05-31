@@ -1,0 +1,24 @@
+name = "anyrouter-check-in"
+main = "src/index.ts"
+compatibility_date = "2026-03-26"
+compatibility_flags = ["nodejs_compat"]
+
+# 每天北京时间 10:00 执行一次，UTC 时间为 02:00。
+[triggers]
+crons = ["0 2 * * *"]
+
+# Cloudflare Browser Rendering 绑定，用于通过真实浏览器上下文处理 WAF。
+# 该能力需要 Workers Paid 计划。
+[browser]
+binding = "BROWSER"
+
+# 统一 KV：保存可视化面板配置、余额 hash、最近一次运行结果。
+# 创建命令：
+# wrangler kv namespace create ANYROUTER_KV
+[[kv_namespaces]]
+binding = "APP_KV"
+id = "<replace-with-your-kv-namespace-id>"
+
+# 唯一需要的 secret：管理面板密码。
+# 账号、provider、通知等配置均在面板中维护，并保存到 APP_KV。
+# wrangler secret put PANEL_PASSWORD
