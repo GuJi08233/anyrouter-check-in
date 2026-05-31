@@ -9,8 +9,8 @@
 ## 功能
 
 - 多账号、多服务商自动签到
-- AnyRouter 内置 provider
-- 自定义 NewAPI / OneAPI provider
+- AnyRouter 内置 provider，沿用 cookies + `new-api-user` 的签到方式
+- NewAPI / OneAPI 账号使用简化配置，只需要站点地址、用户 ID 和令牌
 - 使用 Cloudflare Browser Rendering 处理 WAF
 - 使用 Cloudflare KV 保存账号配置、余额 hash、最近运行状态
 - 可视化管理面板添加和编辑配置
@@ -100,23 +100,25 @@ https://你的-worker.你的账户.workers.dev/
 
 在顶部输入 `PANEL_PASSWORD` 登录后可以：
 
-1. 添加账号：名称、provider、cookies、api_user
-2. 添加自定义 provider：域名、接口路径、请求头、WAF cookie 名称
-3. 配置通知：Telegram、钉钉、飞书、企业微信等
-4. 手动执行签到
-5. 查看最近运行状态
-6. 诊断指定 provider 的 WAF cookie 获取情况
+1. 添加 AnyRouter 账号：名称、cookies、api_user
+2. 添加 NewAPI / OneAPI 账号：站点地址、用户 ID、令牌
+3. 添加自定义 AnyRouter 兼容 provider：域名、接口路径、请求头、WAF cookie 名称
+4. 配置通知：Telegram、钉钉、飞书、企业微信等
+5. 手动执行全量签到，或在账号卡片中单独测试某个账号
+6. 查看最近运行状态
+7. 诊断指定 provider 的 WAF cookie 获取情况
 
 配置会保存到 Cloudflare KV 的 `managed_config` 键中。
 
 ## 账号配置
 
-面板中的账号结构等价于：
+AnyRouter 账号结构等价于：
 
 ```json
 {
   "enabled": true,
   "name": "主账号",
+  "site_type": "anyrouter",
   "provider": "anyrouter",
   "cookies": "session=xxx; other=value",
   "api_user": "12345"
@@ -125,13 +127,41 @@ https://你的-worker.你的账户.workers.dev/
 
 `cookies` 可以是浏览器复制出来的字符串，也可以是 JSON 对象。
 
+NewAPI / OneAPI 账号结构等价于：
+
+```json
+{
+  "enabled": true,
+  "name": "NewAPI 站点",
+  "site_type": "newapi",
+  "provider": "newapi",
+  "site_url": "https://api.example.com",
+  "api_user": "12345",
+  "token": "sk-xxxx"
+}
+```
+
+NewAPI 签到时会请求：
+
+- `POST <站点地址>/api/user/checkin`
+- `GET <站点地址>/api/user/self`
+
+请求头会自动带上：
+
+```text
+New-Api-User: <用户 ID>
+Authorization: Bearer <令牌>
+```
+
 ## Provider 配置
 
 内置 provider：
 
 - `anyrouter`
 
-自定义 provider 示例：
+自定义 provider 主要用于 AnyRouter 兼容站点。NewAPI / OneAPI 站点通常不需要单独添加 provider，直接在账号里填写站点地址、用户 ID 和令牌即可。
+
+自定义 AnyRouter 兼容 provider 示例：
 
 ```json
 {
@@ -161,6 +191,7 @@ https://你的-worker.你的账户.workers.dev/
 
 - Cron：`wrangler.toml` 默认每天北京时间 10:00 执行一次
 - 面板按钮：点击“立即签到”
+- 账号卡片：点击“测试签到”，只运行当前账号，禁用账号也可手动测试
 - API：`POST /api/checkin`
 
 手动 API 示例：
@@ -179,6 +210,7 @@ curl -X POST "https://你的-worker.workers.dev/api/checkin" \
 - `PUT /api/config`：保存配置，需要鉴权
 - `GET /api/status`：最近运行状态，需要鉴权
 - `POST /api/checkin`：手动签到，需要鉴权
+- `POST /api/checkin/:index`：单账号测试签到，需要鉴权，`:index` 从 0 开始
 - `GET /api/debug-waf?provider=anyrouter`：WAF 诊断，需要鉴权
 
 ## 本地开发
@@ -207,10 +239,11 @@ PANEL_PASSWORD
 面板密码只用于登录换取临时 token，后续管理 API 使用该 token 鉴权。
 定时任务只会运行已启用的账号；禁用账号不会自动签到。
 手动测试时可以勾选“包含禁用”，用于临时验证禁用账号配置。
+账号卡片里的“测试签到”只运行当前账号，即使账号处于禁用状态也可以测试。
 
 ## 注意事项
 
-- 面板保存的账号 cookies 和通知 token 会存入 KV，请确保 `PANEL_PASSWORD` 足够强。
+- 面板保存的账号 cookies、NewAPI 令牌和通知 token 会存入 KV，请确保 `PANEL_PASSWORD` 足够强。
 - SMTP 邮箱通知没有直接迁移，Cloudflare Worker 原生运行时不适合直接连接传统 SMTP。
 - WAF provider 会在 Browser Rendering 页面内部完成 API 请求，以减少指纹和 cookie 不一致导致的失败。
 - 如果所有账号都失败且没有余额信息，本项目不会覆盖旧的余额 hash。

@@ -25,6 +25,28 @@ export default {
       return adminResponse;
     }
 
+    if (url.pathname.startsWith('/api/checkin/') && request.method === 'POST') {
+      const authError = await requireAuth(request, env);
+      if (authError) {
+        return authError;
+      }
+
+      const indexText = url.pathname.slice('/api/checkin/'.length);
+      const targetIndex = Number(indexText);
+      if (!Number.isInteger(targetIndex) || targetIndex < 0) {
+        return jsonResponse({ success: false, error: 'Invalid account index' }, { status: 400 });
+      }
+
+      try {
+        const config = await loadManagedConfig(env);
+        const result = await runAllCheckIns(env, config, true, { targetIndex });
+        return jsonResponse({ success: true, ...result });
+      } catch (error) {
+        console.log(`[FAILED] Account test trigger error: ${error}`);
+        return jsonResponse({ success: false, error: String(error) }, { status: 500 });
+      }
+    }
+
     if (url.pathname === '/api/checkin' && request.method === 'POST') {
       const authError = await requireAuth(request, env);
       if (authError) {

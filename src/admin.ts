@@ -380,6 +380,44 @@ function adminHtml(): string {
       width: 16px;
       min-height: 16px;
     }
+    body.locked {
+      display: grid;
+      place-items: center;
+    }
+    body.locked header {
+      position: static;
+      width: min(420px, calc(100vw - 32px));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    body.locked .bar {
+      display: grid;
+      gap: 18px;
+      padding: 28px;
+    }
+    body.locked .brand {
+      align-items: center;
+      min-width: 0;
+      margin-right: 0;
+      text-align: center;
+    }
+    body.locked .auth {
+      display: grid;
+      min-width: 0;
+      width: 100%;
+    }
+    body.locked .auth input {
+      min-width: 0;
+    }
+    body.locked main,
+    body.locked #reload,
+    body.locked #save,
+    body.locked #run,
+    body.locked .bar > .check {
+      display: none;
+    }
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
       nav { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -390,7 +428,7 @@ function adminHtml(): string {
     }
   </style>
 </head>
-<body>
+<body class="locked">
   <header>
     <div class="bar">
       <div class="brand">
@@ -419,7 +457,10 @@ function adminHtml(): string {
         <section id="accounts" class="active">
           <div class="section-head">
             <h2>账号配置</h2>
-            <button id="addAccount">添加账号</button>
+            <div class="toolbar">
+              <button id="addAccount">添加 AnyRouter</button>
+              <button id="addNewApiAccount">添加 NewAPI</button>
+            </div>
           </div>
           <div class="body">
             <div id="accountsList" class="grid"></div>
@@ -475,11 +516,25 @@ function adminHtml(): string {
     let sessionToken = localStorage.getItem('anyrouter_session_token') || '';
 
     function token() { return sessionToken; }
+    function setLocked(locked) {
+      document.body.classList.toggle('locked', locked);
+    }
     function headers() {
       return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token() };
     }
-    function show(value) {
+    function activateTab(tabName) {
+      document.querySelectorAll('nav button').forEach((item) => item.classList.remove('active'));
+      document.querySelectorAll('section').forEach((item) => item.classList.remove('active'));
+      const button = document.querySelector('nav button[data-tab="' + tabName + '"]');
+      if (button) button.classList.add('active');
+      const section = $(tabName);
+      if (section) section.classList.add('active');
+    }
+    function show(value, reveal) {
       $('statusBox').textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+      if (reveal !== false) {
+        activateTab('status');
+      }
     }
     async function api(path, options) {
       const res = await fetch(path, Object.assign({ headers: headers() }, options || {}));
@@ -487,6 +542,7 @@ function adminHtml(): string {
       if (res.status === 401) {
         sessionToken = '';
         localStorage.removeItem('anyrouter_session_token');
+        setLocked(true);
       }
       if (!res.ok || data.success === false) throw data;
       return data;
@@ -542,22 +598,55 @@ function adminHtml(): string {
       box.appendChild(head);
       return box;
     }
+    function accountType(account) {
+      return account.site_type === 'newapi' || account.provider === 'newapi' || account.site_url || account.token
+        ? 'newapi'
+        : 'anyrouter';
+    }
     function renderAccounts() {
       const list = $('accountsList');
       list.innerHTML = '';
       const providerNames = Object.keys(Object.assign({}, state.defaultProviders, state.config.providers));
       state.config.accounts.forEach((account, index) => {
-        const box = item(account.name || 'Account ' + (index + 1), () => {
+        const type = accountType(account);
+        const box = item(account.name || account.site_url || 'Account ' + (index + 1), () => {
           state.config.accounts.splice(index, 1);
           renderAccounts();
         });
-        box.append(
+        const commonFields = [
           checkbox('启用', account.enabled !== false, (v) => account.enabled = v),
           field('名称', account.name, (v) => account.name = v),
-          select('Provider', account.provider || 'anyrouter', providerNames.map((name) => ({ label: name, value: name })), (v) => account.provider = v),
-          field('API User', account.api_user, (v) => account.api_user = v),
-          field('Cookies', typeof account.cookies === 'string' ? account.cookies : JSON.stringify(account.cookies), (v) => account.cookies = v, 'textarea')
-        );
+          select('账号类型', type, [
+            { label: 'AnyRouter', value: 'anyrouter' },
+            { label: 'NewAPI / OneAPI', value: 'newapi' }
+          ], (v) => {
+            account.site_type = v;
+            account.provider = v === 'newapi' ? 'newapi' : 'anyrouter';
+            renderAccounts();
+          })
+        ];
+        if (type === 'newapi') {
+          box.append(
+            ...commonFields,
+            field('站点地址', account.site_url, (v) => account.site_url = v),
+            field('用户 ID', account.api_user, (v) => account.api_user = v),
+            field('令牌', account.token, (v) => account.token = v, 'password')
+          );
+        } else {
+          box.append(
+            ...commonFields,
+            select('Provider', account.provider || 'anyrouter', providerNames.map((name) => ({ label: name, value: name })), (v) => account.provider = v),
+            field('API User', account.api_user, (v) => account.api_user = v),
+            field('Cookies', typeof account.cookies === 'string' ? account.cookies : JSON.stringify(account.cookies || {}), (v) => account.cookies = v, 'textarea')
+          );
+        }
+        const actions = document.createElement('div');
+        actions.className = 'toolbar';
+        const test = document.createElement('button');
+        test.textContent = '测试签到';
+        test.addEventListener('click', () => runAccountCheckIn(index));
+        actions.appendChild(test);
+        box.appendChild(actions);
         list.appendChild(box);
       });
     }
@@ -650,7 +739,8 @@ function adminHtml(): string {
         state.config = data.config;
         state.defaultProviders = data.defaultProviders || {};
         renderAll();
-        show('配置已加载。');
+        setLocked(false);
+        show('配置已加载。', false);
       } catch (e) { show(e); }
     }
     async function login() {
@@ -667,21 +757,34 @@ function adminHtml(): string {
         state.config = data.config;
         state.defaultProviders = data.defaultProviders || {};
         renderAll();
-        show('登录成功，配置已加载。');
+        setLocked(false);
+        show('登录成功，配置已加载。', false);
       } catch (e) { show(e); }
     }
     async function saveConfig() {
       try {
-        const data = await api('/api/config', { method: 'PUT', body: JSON.stringify(state.config) });
-        state.config = data.config;
-        renderAll();
-        show('配置已保存。');
+        await persistConfig();
+        show('配置已保存。', false);
       } catch (e) { show(e); }
+    }
+    async function persistConfig() {
+      const data = await api('/api/config', { method: 'PUT', body: JSON.stringify(state.config) });
+      state.config = data.config;
+      renderAll();
+      return data;
     }
     async function runCheckIn() {
       try {
+        await persistConfig();
         const path = $('includeDisabled').checked ? '/api/checkin?includeDisabled=1' : '/api/checkin';
         const data = await api(path, { method: 'POST' });
+        show(data);
+      } catch (e) { show(e); }
+    }
+    async function runAccountCheckIn(index) {
+      try {
+        await persistConfig();
+        const data = await api('/api/checkin/' + index, { method: 'POST' });
         show(data);
       } catch (e) { show(e); }
     }
@@ -695,10 +798,7 @@ function adminHtml(): string {
 
     document.querySelectorAll('nav button').forEach((button) => {
       button.addEventListener('click', () => {
-        document.querySelectorAll('nav button').forEach((item) => item.classList.remove('active'));
-        document.querySelectorAll('section').forEach((item) => item.classList.remove('active'));
-        button.classList.add('active');
-        $(button.dataset.tab).classList.add('active');
+        activateTab(button.dataset.tab);
       });
     });
     $('remember').addEventListener('click', login);
@@ -708,7 +808,11 @@ function adminHtml(): string {
     $('loadStatus').addEventListener('click', loadStatus);
     $('debugWaf').addEventListener('click', debugWaf);
     $('addAccount').addEventListener('click', () => {
-      state.config.accounts.push({ enabled: true, name: '', provider: 'anyrouter', api_user: '', cookies: '' });
+      state.config.accounts.push({ enabled: true, name: '', site_type: 'anyrouter', provider: 'anyrouter', api_user: '', cookies: '' });
+      renderAccounts();
+    });
+    $('addNewApiAccount').addEventListener('click', () => {
+      state.config.accounts.push({ enabled: true, name: '', site_type: 'newapi', provider: 'newapi', site_url: '', api_user: '', token: '' });
       renderAccounts();
     });
     $('addProvider').addEventListener('click', () => {

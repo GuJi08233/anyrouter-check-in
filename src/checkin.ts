@@ -91,23 +91,30 @@ export async function runAllCheckIns(
   env: Env,
   config: ManagedConfig,
   isManualRun: boolean,
-  options: { includeDisabled?: boolean } = {},
+  options: { includeDisabled?: boolean; targetIndex?: number } = {},
 ): Promise<RunAllResult> {
   console.log('[SYSTEM] AnyRouter multi-account auto check-in started (Cloudflare Worker)');
   console.log(`[TIME] Execution time: ${getLocalTimeStr()}`);
   console.log(isManualRun ? '[INFO] Manual run detected' : '[INFO] Scheduled run detected');
 
   const appConfig = buildAppConfig(config);
-  const accountEntries = appConfig.accounts
-    .map((account, index) => ({ account, index }))
-    .filter(({ account }) => options.includeDisabled || account.enabled);
+  const allAccountEntries = appConfig.accounts.map((account, index) => ({ account, index }));
+  const accountEntries = typeof options.targetIndex === 'number'
+    ? allAccountEntries.filter(({ index }) => index === options.targetIndex)
+    : allAccountEntries.filter(({ account }) => options.includeDisabled || account.enabled);
   const notificationContent: string[] = [];
 
   if (accountEntries.length === 0) {
     const result = {
       successCount: 0,
       totalCount: 0,
-      notificationContent: [isManualRun ? '❗ 没有可运行账号，请先启用账号或勾选“包含禁用”' : 'ℹ️ 没有启用账号，定时任务已跳过'],
+      notificationContent: [
+        typeof options.targetIndex === 'number'
+          ? '❗ 未找到指定账号'
+          : isManualRun
+            ? '❗ 没有可运行账号，请先启用账号或勾选“包含禁用”'
+            : 'ℹ️ 没有启用账号，定时任务已跳过',
+      ],
       needNotify: isManualRun,
     };
     await saveLastRun(env.APP_KV, { ...result, time: getLocalTimeStr(), manual: isManualRun });
@@ -123,9 +130,9 @@ export async function runAllCheckIns(
 
   for (const { account, index } of accountEntries) {
     const accountName = account.getDisplayName(index);
-    const provider = appConfig.getProvider(account.provider);
+    const provider = account.siteType === 'anyrouter' ? appConfig.getProvider(account.provider) : undefined;
 
-    if (!provider) {
+    if (account.siteType === 'anyrouter' && !provider) {
       console.log(`[FAILED] ${accountName}: Provider "${account.provider}" not found`);
       needNotify = true;
       notificationContent.push(`【失败】**${accountName}** - 未找到 Provider：${account.provider}`);
@@ -204,10 +211,23 @@ export async function checkInAccount(
   env: Env,
   account: AccountConfig,
   accountIndex: number,
-  provider: ProviderConfig,
+  provider?: ProviderConfig,
 ): Promise<CheckInResult> {
   const accountName = account.getDisplayName(accountIndex);
   console.log(`\n[PROCESSING] Starting to process ${accountName}`);
+
+  if (account.siteType === 'newapi') {
+    return await checkInNewApiAccount(account, accountName);
+  }
+
+  if (!provider) {
+    return {
+      success: false,
+      userInfoBefore: { success: false, error: `Provider "${account.provider}" not found` },
+      userInfoAfter: null,
+    };
+  }
+
   console.log(`[INFO] ${accountName}: Using provider "${provider.name}" (${provider.domain})`);
 
   const userCookies = parseCookies(account.cookies);
@@ -260,6 +280,91 @@ export function formatCheckInNotification(detail: CheckInDetail): string {
 
 function formatFailedNotification(accountName: string, result: CheckInResult): string {
   return `【失败】**${accountName}** - ${result.userInfoBefore?.error ?? result.userInfoAfter?.error ?? '签到失败'}`;
+}
+
+async function checkInNewApiAccount(account: AccountConfig, accountName: string): Promise<CheckInResult> {
+  try {
+    const origin = normalizeSiteOrigin(account.siteUrl);
+    console.log(`[INFO] ${accountName}: Using NewAPI site "${origin}"`);
+
+    const headers = buildNewApiHeaders(account, origin);
+    const userInfoBefore = await getNewApiUserInfo(origin, headers, account.balanceDivisor);
+    logUserInfo(accountName, userInfoBefore);
+
+    const success = await executeNewApiCheckIn(origin, headers, accountName);
+
+    const userInfoAfter = await getNewApiUserInfo(origin, headers, account.balanceDivisor);
+    return {
+      success,
+      userInfoBefore,
+      userInfoAfter,
+      detail: buildDetail(accountName, userInfoBefore, userInfoAfter),
+    };
+  } catch (error) {
+    const message = String(error).substring(0, 80);
+    console.log(`[FAILED] ${accountName}: NewAPI check-in error: ${message}`);
+    return {
+      success: false,
+      userInfoBefore: { success: false, error: message },
+      userInfoAfter: null,
+    };
+  }
+}
+
+function buildNewApiHeaders(account: AccountConfig, origin: string): Record<string, string> {
+  return {
+    'User-Agent': DESKTOP_UA,
+    Accept: 'application/json, text/plain, */*',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Cache-Control': 'no-cache',
+    Pragma: 'no-cache',
+    Referer: `${origin}/`,
+    Origin: origin,
+    'Content-Type': 'application/json',
+    'New-Api-User': account.apiUser,
+    Authorization: `Bearer ${account.token}`,
+  };
+}
+
+async function getNewApiUserInfo(
+  origin: string,
+  headers: Record<string, string>,
+  balanceDivisor: number,
+): Promise<UserInfoResult> {
+  try {
+    const response = await fetch(`${origin}/api/user/self`, {
+      method: 'GET',
+      headers,
+    });
+    return parseUserInfo(response.status, await response.text(), balanceDivisor);
+  } catch (error) {
+    return { success: false, error: `获取用户信息失败：${String(error).substring(0, 50)}` };
+  }
+}
+
+async function executeNewApiCheckIn(
+  origin: string,
+  headers: Record<string, string>,
+  accountName: string,
+): Promise<boolean> {
+  console.log(`[NETWORK] ${accountName}: Executing NewAPI check-in`);
+  const response = await fetch(`${origin}/api/user/checkin`, {
+    method: 'POST',
+    headers,
+  });
+  return parseSignIn(response.status, await response.text(), accountName);
+}
+
+function normalizeSiteOrigin(siteUrl: string): string {
+  const trimmed = siteUrl.trim();
+  if (!trimmed) {
+    throw new Error('NewAPI 站点地址为空');
+  }
+  try {
+    return new URL(trimmed).origin;
+  } catch {
+    throw new Error(`NewAPI 站点地址格式错误：${trimmed}`);
+  }
 }
 
 async function checkInViaBrowser(
@@ -468,14 +573,14 @@ async function executeCheckIn(
   return parseSignIn(response.status, await response.text(), accountName);
 }
 
-function parseUserInfo(status: number, text: string): UserInfoResult {
+function parseUserInfo(status: number, text: string, balanceDivisor = 500000): UserInfoResult {
   if (status === 200) {
     try {
       const data = JSON.parse(text) as NewApiUserInfoResponse;
       if (data.success) {
         const userData = data.data ?? {};
-        const quota = Math.round(((userData.quota ?? 0) / 500000) * 100) / 100;
-        const usedQuota = Math.round(((userData.used_quota ?? 0) / 500000) * 100) / 100;
+        const quota = Math.round(((userData.quota ?? 0) / balanceDivisor) * 100) / 100;
+        const usedQuota = Math.round(((userData.used_quota ?? 0) / balanceDivisor) * 100) / 100;
         return { success: true, quota, usedQuota };
       }
       return { success: false, error: `获取用户信息失败：响应未成功${data.message ? `（${data.message}）` : ''}` };

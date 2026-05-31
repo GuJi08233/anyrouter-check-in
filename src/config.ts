@@ -61,21 +61,35 @@ export class ProviderConfig {
 
 export class AccountConfig {
   enabled: boolean;
+  siteType: 'anyrouter' | 'newapi';
   cookies: Record<string, string> | string;
   apiUser: string;
+  token: string;
+  siteUrl: string;
+  balanceDivisor: number;
   provider: string;
   name: string | null;
 
   constructor(data: AccountConfigData, index: number) {
     this.enabled = data.enabled !== false;
-    this.cookies = data.cookies;
-    this.apiUser = data.api_user;
-    this.provider = data.provider ?? 'anyrouter';
+    this.siteType = inferAccountType(data);
+    this.cookies = data.cookies ?? '';
+    this.apiUser = data.api_user?.trim() ?? '';
+    this.token = normalizeBearerToken(data.token);
+    this.siteUrl = (data.site_url ?? '').trim().replace(/\/+$/, '');
+    this.balanceDivisor = normalizeBalanceDivisor(data.balance_divisor);
+    this.provider = this.siteType === 'newapi' ? 'newapi' : data.provider ?? 'anyrouter';
     this.name = data.name?.trim() ? data.name.trim() : null;
   }
 
   getDisplayName(index: number): string {
-    return this.name ?? `Account ${index + 1}`;
+    if (this.name) {
+      return this.name;
+    }
+    if (this.siteType === 'newapi' && this.siteUrl) {
+      return this.siteUrl;
+    }
+    return `Account ${index + 1}`;
   }
 }
 
@@ -201,11 +215,24 @@ export function validateManagedConfig(config: ManagedConfig): string[] {
     if (account.enabled === false) {
       continue;
     }
-    if (!account.api_user?.trim()) {
-      errors.push(`账号 ${index + 1} 缺少 api_user`);
-    }
-    if (!account.cookies || Object.keys(parseCookies(account.cookies)).length === 0) {
-      errors.push(`账号 ${index + 1} 缺少有效 cookies`);
+    const accountType = inferAccountType(account);
+    if (accountType === 'newapi') {
+      if (!account.site_url?.trim()) {
+        errors.push(`账号 ${index + 1} 缺少 NewAPI 站点地址`);
+      }
+      if (!account.api_user?.trim()) {
+        errors.push(`账号 ${index + 1} 缺少 NewAPI 用户 ID`);
+      }
+      if (!normalizeBearerToken(account.token)) {
+        errors.push(`账号 ${index + 1} 缺少 NewAPI 令牌`);
+      }
+    } else {
+      if (!account.api_user?.trim()) {
+        errors.push(`账号 ${index + 1} 缺少 api_user`);
+      }
+      if (!account.cookies || Object.keys(parseCookies(account.cookies)).length === 0) {
+        errors.push(`账号 ${index + 1} 缺少有效 cookies`);
+      }
     }
   }
 
@@ -227,6 +254,9 @@ export function validateManagedConfig(config: ManagedConfig): string[] {
     if (account.enabled === false) {
       continue;
     }
+    if (inferAccountType(account) === 'newapi') {
+      continue;
+    }
     const providerName = account.provider ?? 'anyrouter';
     if (!mergedProviders[providerName]) {
       errors.push(`账号 ${account.name ?? account.api_user} 引用了不存在的 Provider：${providerName}`);
@@ -245,13 +275,36 @@ function normalizeManagedConfig(config: Partial<ManagedConfig>): ManagedConfig {
 }
 
 function normalizeAccount(account: AccountConfigData): AccountConfigData {
+  const siteType = inferAccountType(account);
   return {
     enabled: account.enabled !== false,
     name: account.name?.trim() || undefined,
-    provider: account.provider?.trim() || 'anyrouter',
-    cookies: account.cookies,
+    site_type: siteType,
+    provider: siteType === 'newapi' ? 'newapi' : account.provider?.trim() || 'anyrouter',
+    cookies: siteType === 'newapi' ? undefined : account.cookies,
     api_user: account.api_user?.trim() ?? '',
+    token: siteType === 'newapi' ? normalizeBearerToken(account.token) : undefined,
+    site_url: siteType === 'newapi' ? account.site_url?.trim().replace(/\/+$/, '') || undefined : undefined,
+    balance_divisor: siteType === 'newapi' ? normalizeBalanceDivisor(account.balance_divisor) : undefined,
   };
+}
+
+function inferAccountType(account: Partial<AccountConfigData>): 'anyrouter' | 'newapi' {
+  if (account.site_type === 'newapi' || account.provider === 'newapi' || account.site_url || account.token) {
+    return 'newapi';
+  }
+  return 'anyrouter';
+}
+
+function normalizeBearerToken(token: string | undefined): string {
+  return (token ?? '').trim().replace(/^Bearer\s+/i, '');
+}
+
+function normalizeBalanceDivisor(value: number | undefined): number {
+  if (!value || Number.isNaN(value) || value <= 0) {
+    return 500000;
+  }
+  return value;
 }
 
 function normalizeProviders(providers: ManagedConfig['providers'] | undefined): Record<string, ProviderConfigData> {

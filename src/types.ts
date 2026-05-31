@@ -17,9 +17,13 @@ export interface ProviderConfigData {
 export interface AccountConfigData {
   enabled?: boolean;
   name?: string;
+  site_type?: 'anyrouter' | 'newapi';
   provider?: string;
-  cookies: Record<string, string> | string;
-  api_user: string;
+  cookies?: Record<string, string> | string;
+  api_user?: string;
+  token?: string;
+  site_url?: string;
+  balance_divisor?: number;
 }
 
 export interface TelegramConfig {
